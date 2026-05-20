@@ -99,6 +99,8 @@
 //! [`getrandom`]: https://crates.io/crates/getrandom
 
 #![no_std]
+#![feature(const_convert)]
+#![feature(const_trait_impl)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![forbid(unsafe_code)]
 #![warn(missing_docs, missing_debug_implementations, rust_2018_idioms)]
@@ -140,33 +142,70 @@ impl Clone for Rng {
 impl Rng {
     /// Generates a random `u32`.
     #[inline]
-    fn gen_u32(&mut self) -> u32 {
-        self.gen_u64() as u32
+    const fn gen_u32(&mut self) -> u32 {
+        (self.gen_u64() >> 32) as u32
     }
 
     /// Generates a random `u64`.
     #[inline]
-    fn gen_u64(&mut self) -> u64 {
+    const fn gen_u64(&mut self) -> u64 {
         // Constants for WyRand taken from: https://github.com/wangyi-fudan/wyhash/blob/master/wyhash.h#L151
         // Updated for the final v4.2 implementation with improved constants for better entropy output.
+        // const WY_CONST_0: u64 = 0x2d35_8dcc_aa6c_78a5;
+        // const WY_CONST_1: u64 = 0x8bb8_4b93_962e_acc9;
+
+        // let s = self.0.wrapping_add(WY_CONST_0);
+        // self.0 = s;
+        // let t = u128::from(s) * u128::from(s ^ WY_CONST_1);
+        // (t as u64) ^ (t >> 64) as u64
+
+        // Constants for WyRand taken from: https://github.com/wangyi-fudan/wyhash/blob/master/wyhash.h#L151
+        // Updated for the final v4.2 implementation with improved constants for better entropy output.
+        // This is slop
         const WY_CONST_0: u64 = 0x2d35_8dcc_aa6c_78a5;
         const WY_CONST_1: u64 = 0x8bb8_4b93_962e_acc9;
 
         let s = self.0.wrapping_add(WY_CONST_0);
         self.0 = s;
-        let t = u128::from(s) * u128::from(s ^ WY_CONST_1);
-        (t as u64) ^ (t >> 64) as u64
+
+        let a = s;
+        let b = s ^ WY_CONST_1;
+
+        // Split both numbers into 32-bit halves
+        let a_lo = a & 0xFFFF_FFFF;
+        let a_hi = a >> 32;
+        let b_lo = b & 0xFFFF_FFFF;
+        let b_hi = b >> 32;
+
+        // Perform four 32x32 -> 64-bit multiplications
+        let m00 = a_lo * b_lo;
+        let m01 = a_lo * b_hi;
+        let m10 = a_hi * b_lo;
+        let m11 = a_hi * b_hi;
+
+        // Calculate the carry-overs for the middle 32 bits
+        // The max value of `cross` is 3 * 0xFFFFFFFF = 0x2FFFFFFFD, which safely fits in a u64
+        let cross = (m00 >> 32) + (m10 & 0xFFFF_FFFF) + (m01 & 0xFFFF_FFFF);
+
+        // 'hi' is the upper 64 bits of the 128-bit product
+        let hi = m11 + (m10 >> 32) + (m01 >> 32) + (cross >> 32);
+
+        // 'lo' is the lower 64 bits of the 128-bit product (standard wrapping multiplication)
+        let lo = a.wrapping_mul(b);
+
+        // Return the folded hash
+        lo ^ hi
     }
 
     /// Generates a random `u128`.
     #[inline]
-    fn gen_u128(&mut self) -> u128 {
+    const fn gen_u128(&mut self) -> u128 {
         (u128::from(self.gen_u64()) << 64) | u128::from(self.gen_u64())
     }
 
     /// Generates a random `u32` in `0..n`.
     #[inline]
-    fn gen_mod_u32(&mut self, n: u32) -> u32 {
+    const fn gen_mod_u32(&mut self, n: u32) -> u32 {
         // Adapted from: https://lemire.me/blog/2016/06/30/fast-random-shuffling/
         let mut r = self.gen_u32();
         let mut hi = mul_high_u32(r, n);
@@ -184,7 +223,7 @@ impl Rng {
 
     /// Generates a random `u64` in `0..n`.
     #[inline]
-    fn gen_mod_u64(&mut self, n: u64) -> u64 {
+    const fn gen_mod_u64(&mut self, n: u64) -> u64 {
         // Adapted from: https://lemire.me/blog/2016/06/30/fast-random-shuffling/
         let mut r = self.gen_u64();
         let mut hi = mul_high_u64(r, n);
@@ -202,7 +241,7 @@ impl Rng {
 
     /// Generates a random `u128` in `0..n`.
     #[inline]
-    fn gen_mod_u128(&mut self, n: u128) -> u128 {
+    const fn gen_mod_u128(&mut self, n: u128) -> u128 {
         // Adapted from: https://lemire.me/blog/2016/06/30/fast-random-shuffling/
         let mut r = self.gen_u128();
         let mut hi = mul_high_u128(r, n);
@@ -221,19 +260,19 @@ impl Rng {
 
 /// Computes `(a * b) >> 32`.
 #[inline]
-fn mul_high_u32(a: u32, b: u32) -> u32 {
+const fn mul_high_u32(a: u32, b: u32) -> u32 {
     (((a as u64) * (b as u64)) >> 32) as u32
 }
 
 /// Computes `(a * b) >> 64`.
 #[inline]
-fn mul_high_u64(a: u64, b: u64) -> u64 {
+const fn mul_high_u64(a: u64, b: u64) -> u64 {
     (((a as u128) * (b as u128)) >> 64) as u64
 }
 
 /// Computes `(a * b) >> 128`.
 #[inline]
-fn mul_high_u128(a: u128, b: u128) -> u128 {
+const fn mul_high_u128(a: u128, b: u128) -> u128 {
     // Adapted from: https://stackoverflow.com/a/28904636
     let a_lo = a as u64 as u128;
     let a_hi = (a >> 64) as u64 as u128;
@@ -246,40 +285,67 @@ fn mul_high_u128(a: u128, b: u128) -> u128 {
 
 macro_rules! rng_integer {
     ($t:tt, $unsigned_t:tt, $gen:tt, $mod:tt, $doc:tt) => {
-        #[doc = $doc]
-        ///
-        /// Panics if the range is empty.
-        #[inline]
-        pub fn $t(&mut self, range: impl RangeBounds<$t>) -> $t {
-            let panic_empty_range = || {
-                panic!(
-                    "empty range: {:?}..{:?}",
-                    range.start_bound(),
-                    range.end_bound()
-                )
-            };
+        paste::paste! {
+            #[doc = $doc]
+            ///
+            /// Panics if the range is empty.
+            #[inline]
+            pub fn $t(&mut self, range: impl RangeBounds<$t>) -> $t {
+                let panic_empty_range = || {
+                    panic!(
+                        "empty range: {:?}..{:?}",
+                        range.start_bound(),
+                        range.end_bound()
+                    )
+                };
 
-            let low = match range.start_bound() {
-                Bound::Unbounded => $t::MIN,
-                Bound::Included(&x) => x,
-                Bound::Excluded(&x) => x.checked_add(1).unwrap_or_else(panic_empty_range),
-            };
+                let low = match range.start_bound() {
+                    Bound::Unbounded => $t::MIN,
+                    Bound::Included(&x) => x,
+                    Bound::Excluded(&x) => x.checked_add(1).unwrap_or_else(panic_empty_range),
+                };
 
-            let high = match range.end_bound() {
-                Bound::Unbounded => $t::MAX,
-                Bound::Included(&x) => x,
-                Bound::Excluded(&x) => x.checked_sub(1).unwrap_or_else(panic_empty_range),
-            };
+                let high = match range.end_bound() {
+                    Bound::Unbounded => $t::MAX,
+                    Bound::Included(&x) => x,
+                    Bound::Excluded(&x) => x.checked_sub(1).unwrap_or_else(panic_empty_range),
+                };
 
-            if low > high {
-                panic_empty_range();
+                if low > high {
+                    panic_empty_range();
+                }
+
+                if low == $t::MIN && high == $t::MAX {
+                    self.$gen() as $t
+                } else {
+                    let len = high.wrapping_sub(low).wrapping_add(1);
+                    low.wrapping_add(self.$mod(len as $unsigned_t as _) as $t)
+                }
             }
 
-            if low == $t::MIN && high == $t::MAX {
-                self.$gen() as $t
-            } else {
-                let len = high.wrapping_sub(low).wrapping_add(1);
-                low.wrapping_add(self.$mod(len as $unsigned_t as _) as $t)
+            #[doc = $doc]
+            ///
+            /// Panics if the range is empty.
+            #[inline]
+            // This magic syntax concatenates the type name and `_const`
+            pub const fn [<$t _const>](&mut self, range: core::ops::Range<$t>) -> $t {
+                let low = range.start;
+
+                let high = match range.end.checked_sub(1) {
+                    Some(x) => x,
+                    None => panic!("empty range"),
+                };
+
+                if low > high {
+                    panic!("empty range");
+                }
+
+                if low == $t::MIN && high == $t::MAX {
+                    self.$gen() as $t
+                } else {
+                    let len = high.wrapping_sub(low).wrapping_add(1);
+                    low.wrapping_add(self.$mod(len as $unsigned_t as _) as $t)
+                }
             }
         }
     };
@@ -338,8 +404,8 @@ impl Rng {
 
     /// Generates a random `bool`.
     #[inline]
-    pub fn bool(&mut self) -> bool {
-        self.u8(..) % 2 == 0
+    pub const fn bool(&mut self) -> bool {
+        self.u8_const(u8::MIN..u8::MAX) % 2 == 0
     }
 
     /// Generates a random digit in the given `base`.
