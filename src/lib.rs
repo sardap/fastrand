@@ -799,4 +799,38 @@ impl Rng {
         }
         val.try_into().unwrap()
     }
+
+    pub fn duration(&mut self, range: impl RangeBounds<chrono::Duration>) -> chrono::Duration {
+        use chrono::Duration;
+
+        let panic_empty_range = || {
+            panic!(
+                "empty range: {:?}..{:?}",
+                range.start_bound(),
+                range.end_bound()
+            )
+        };
+
+        let low = match range.start_bound() {
+            Bound::Unbounded => i64::MIN,
+            Bound::Included(&x) => x.num_milliseconds(),
+            Bound::Excluded(&x) => x
+                .num_milliseconds()
+                .checked_add(1)
+                .unwrap_or_else(panic_empty_range),
+        };
+
+        let high = match range.end_bound() {
+            Bound::Unbounded => i64::MAX,
+            Bound::Included(&x) => x.num_milliseconds(),
+            Bound::Excluded(&x) => x
+                .num_milliseconds()
+                .checked_sub(1)
+                .unwrap_or_else(panic_empty_range),
+        };
+
+        let value = self.i64(low..high);
+
+        Duration::milliseconds(value)
+    }
 }
